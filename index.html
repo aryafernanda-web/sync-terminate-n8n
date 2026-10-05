@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sync Terminate → n8n → Notion</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#191919;--card:#202020;--line:#2f2f2f;--tx:#e6e6e6;--mut:#9b9b9b;--ac:#2f80ed;--ok:#4caf7d;--bad:#e5534b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,Segoe UI,Arial,sans-serif;padding:24px}
+.wrap{max-width:1200px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 10px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.col{flex:1;min-width:240px}
+label{display:block;color:var(--mut);font-size:12px;margin-bottom:4px}
+input[type=file],input[type=text],input[type=date]{width:100%;background:#151515;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:8px}
+button{background:var(--ac);color:#fff;border:0;border-radius:6px;padding:9px 14px;cursor:pointer;font-weight:600}
+button.sec{background:#333}button:disabled{opacity:.4;cursor:not-allowed}
+.stats{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
+.chip{background:#151515;border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--mut)}
+.chip b{color:var(--tx)}
+.tw{max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+th{position:sticky;top:0;background:#262626}
+.no{color:var(--bad)}.ok{color:var(--ok)}.tag{font-size:10px;color:var(--mut)}
+#msg{margin-top:10px;padding:10px;border-radius:6px;display:none;white-space:pre-wrap}
+#msg.ok{display:block;background:#12301f;color:#8fe0b0}#msg.err{display:block;background:#3a1816;color:#ffa9a3}
+.hint{font-size:12px;color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Sync Terminate → n8n → Notion</h1>
+<div class="sub">Cocokkan hasil query dengan Master Data, ambil nomor telepon &amp; data pendukung, lalu kirim ke webhook n8n. Semua diproses di browser Anda.</div>
+
+<div class="card">
+  <h2>1. Upload file</h2>
+  <div class="row">
+    <div class="col"><label>Hasil Query (.xlsx)</label><input type="file" id="fq" accept=".xlsx,.xls,.csv"></div>
+    <div class="col"><label>Master Data TLA (.xlsx)</label><input type="file" id="fm" accept=".xlsx,.xls"></div>
+    <button id="bproc">Proses &amp; Cocokkan</button>
+  </div>
+  <div id="info" class="hint"></div>
+</div>
+
+<div class="card" id="cres" style="display:none">
+  <h2>2. Hasil pencocokan</h2>
+  <div class="row" style="margin-bottom:10px">
+    <div><label>Tanggal terminate dari</label><input type="date" id="d1"></div>
+    <div><label>sampai</label><input type="date" id="d2"></div>
+    <div style="padding-bottom:6px"><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="onlyph" checked> Hanya yang ada nomor telepon</label></div>
+    <button class="sec" id="b30">30 hari terakhir</button>
+    <button class="sec" id="ball">Semua tanggal</button>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="tw"><table><thead><tr>
+    <th><input type="checkbox" id="chkall" checked></th><th>Nama Pelanggan</th><th>Nomor Telepon</th><th>ID Costumer</th><th>Billing Number</th><th>MODEM</th><th>Paket Home</th><th>Contract End Date</th><th>Maps</th><th>Tgl Terminate</th>
+  </tr></thead><tbody id="tb"></tbody></table></div>
+</div>
+
+<div class="card" id="csend">
+  <h2>Pengaturan kirim ke n8n</h2>
+  <div class="row">
+    <div class="col" style="flex:3"><label>Webhook URL n8n (POST)</label><input type="text" id="url" placeholder="/api/send (di Vercel) atau URL webhook n8n"></div>
+    <button id="bsend">Kirim ke n8n</button>
+    <button class="sec" id="bdl">Download JSON</button>
+    <button class="sec" id="bcp">Copy JSON</button>
+  </div>
+  <div class="hint" style="margin:10px 0"><label style="display:flex;gap:6px;align-items:center;margin:0;color:var(--tx)"><input type="checkbox" id="auto" checked> Otomatis kirim ke n8n/Notion setelah file diproses, hanya terminate dalam <input type="number" id="adays" value="30" min="1" style="width:64px;padding:4px"> hari terakhir (baris "cek manual" tidak ikut)</label></div>
+  <div class="hint">Format kirim: <code>{ "items": [ { nama_pelanggan, status, nomor_telepon, id_customer, billing_number, modem, paket_home, contract_end_date, maps, follow_up_terminate } ] }</code></div>
+  <div id="msg"></div>
+</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const nk=s=>String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+const nm=s=>String(s).toLowerCase().replace(/[^a-z]/g,'');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let rows=[];
+
+const pick=(r,names)=>{for(const k in r){if(names.includes(nk(k)))return r[k]}return ''};
+const idOf=v=>{if(v===''||v==null)return '';const s=typeof v==='number'?String(Math.round(v)):String(v).trim().replace(/\.0+$/,'');return s.replace(/\D/g,'').replace(/^0+/,'')};
+function normPhone(v){
+  if(v===''||v==null)return '';
+  let s=typeof v==='number'?String(Math.round(v)):String(v);
+  s=s.split(/[\/,;]/)[0];let d=s.replace(/\D/g,'');
+  if(d.length<8)return '';
+  if(d.startsWith('62'))return d;
+  if(d.startsWith('0'))return '62'+d.slice(1);
+  if(d.startsWith('8'))return '62'+d;
+  return d;
+}
+function toISO(v){
+  if(v instanceof Date)return v.toISOString().slice(0,10);
+  if(typeof v==='number'&&v>20000)return new Date(Math.round((v-25569)*864e5)).toISOString().slice(0,10);
+  const m=String(v||'').trim().match(/^(\d{4})-(\d{2})-(\d{2})/);return m?m[0]:'';
+}
+const cap=s=>String(s||'').trim().split(/\s+/).map(w=>/^\d/.test(w)?w.toUpperCase():w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
+const paket=(b,bw)=>[cap(b),String(bw||'').replace(/\s+/g,'').replace(/mbps/i,'Mbps')].filter(Boolean).join(' ');
+
+const readWB=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(XLSX.read(e.target.result,{type:'array'}));r.onerror=rej;r.readAsArrayBuffer(f)});
+const sheetRows=(wb,name)=>XLSX.utils.sheet_to_json(wb.Sheets[name],{defval:''});
+
+function buildMaster(wb){
+  const byCA=new Map(),expCA=new Map(),phCA=new Map(),phBP=new Map(),byCust=new Map(),byName=new Map();
+  const F={ca:['contractaccount','billing','bricmca','brimca'],bp:['bp','businesspartnerid'],ph:['bpphone','nomerhp','nomer','notelp','nohp','phone']};
+  for(const name of wb.SheetNames){
+    const rs=sheetRows(wb,name);if(!rs.length)continue;
+    const keys=Object.keys(rs[0]).map(nk);
+    if(nk(name)==='datacustomer'){
+      for(const r of rs){const p=normPhone(pick(r,['notelp']));
+        if(p){const c=idOf(pick(r,['custid'])),n=nm(pick(r,['nama']));if(c)byCust.set(c,p);if(n)byName.set(n,p);}
+        const ca=idOf(pick(r,['brimca']));if(!ca)continue;
+        byCA.set(ca,{ph:p,maps:String(pick(r,['maps'])||'').trim(),exp:toISO(pick(r,['expdate']))});}
+    }else if(nk(name)==='brimsubs'){
+      for(const r of rs){const ca=idOf(pick(r,['contractaccount']));const d=toISO(pick(r,['expireddate']));if(ca&&d)expCA.set(ca,d);}
+    }else if(keys.some(k=>F.ph.includes(k))&&keys.some(k=>F.bp.includes(k))){
+      for(const r of rs){const p=normPhone(pick(r,F.ph));if(!p)continue;
+        const bp=idOf(pick(r,F.bp)),ca=idOf(pick(r,F.ca));
+        if(ca)phCA.set(ca,p);if(bp)phBP.set(bp,p);}
+    }
+  }
+  return {byCA,expCA,phCA,phBP,byCust,byName};
+}
+
+function sync(qrows,M){
+  const best=new Map();
+  for(const r of qrows){
+    const ca=idOf(pick(r,['contractaccount']));if(!ca)continue;
+    const td=toISO(pick(r,['datetermination']));
+    const old=best.get(ca);if(!old||td>old.td)best.set(ca,{r,td});
+  }
+  const out=[];
+  for(const [ca,{r,td}] of best){
+    const bp=idOf(pick(r,['businesspartnerid']));
+    const dc=M.byCA.get(ca)||{};
+    let phone=dc.ph||'',src=phone?'Data Customer':'';
+    if(!phone&&M.phCA.get(ca)){phone=M.phCA.get(ca);src='Sheet terminate (CA)'}
+    if(!phone&&M.phBP.get(bp)){phone=M.phBP.get(bp);src='Sheet terminate (BP)'}
+    const nama=String(pick(r,['bpfullname'])).trim();
+    if(!phone&&M.byCust.get(bp)){phone=M.byCust.get(bp);src='Cocok ID Cust — cek manual'}
+    if(!phone&&M.byName.get(nm(nama))){phone=M.byName.get(nm(nama));src='Cocok NAMA — cek manual'}
+    out.push({td,src,sel:true,item:{
+      nama_pelanggan:String(pick(r,['bpfullname'])).trim(),
+      status:'Terminate',
+      nomor_telepon:phone,
+      id_customer:bp,
+      billing_number:ca,
+      modem:String(pick(r,['modemstatus'])).trim().toUpperCase(),
+      paket_home:paket(pick(r,['bundlename']),pick(r,['bandwidth'])),
+      contract_end_date:M.expCA.get(ca)||dc.exp||'',
+      maps:dc.maps||'',
+      follow_up_terminate:true
+    }});
+  }
+  return out.sort((a,b)=>b.td.localeCompare(a.td));
+}
+
+const visible=()=>{
+  const a=$('d1').value,b=$('d2').value,op=$('onlyph').checked;
+  return rows.filter(x=>(!a||x.td>=a)&&(!b||x.td<=b)&&(!op||x.item.nomor_telepon));
+};
+function render(){
+  const v=visible();
+  $('tb').innerHTML=v.map((x,i)=>{const t=x.item;return `<tr>
+    <td><input type="checkbox" data-i="${rows.indexOf(x)}" ${x.sel?'checked':''}></td>
+    <td>${esc(t.nama_pelanggan)}</td>
+    <td class="${t.nomor_telepon?'ok':'no'}">${esc(t.nomor_telepon)||'— tidak ditemukan'} <span class="tag">${esc(x.src)}</span></td>
+    <td>${esc(t.id_customer)}</td><td>${esc(t.billing_number)}</td><td>${esc(t.modem)}</td>
+    <td>${esc(t.paket_home)}</td><td>${esc(t.contract_end_date)}</td>
+    <td>${t.maps?esc(t.maps.slice(0,30))+'…':''}</td><td>${esc(x.td)}</td></tr>`}).join('');
+  const all=rows.length,wp=rows.filter(x=>x.item.nomor_telepon).length,sel=v.filter(x=>x.sel).length;
+  $('stats').innerHTML=`<div class="chip">Total query: <b>${all}</b></div><div class="chip">Ada nomor: <b class="ok">${wp}</b></div><div class="chip">Tanpa nomor: <b class="no">${all-wp}</b></div><div class="chip">Tampil: <b>${v.length}</b></div><div class="chip">Akan dikirim: <b>${sel}</b></div>`;
+  $('bsend').disabled=!sel;
+}
+const payload=()=>({items:visible().filter(x=>x.sel).map(x=>x.item)});
+function msg(t,ok){const m=$('msg');m.className=ok?'ok':'err';m.textContent=t}
+
+$('bproc').onclick=async()=>{
+  const fq=$('fq').files[0],fm=$('fm').files[0];
+  if(!fq||!fm){$('info').textContent='Pilih kedua file dulu.';return}
+  $('info').textContent='Memproses…';
+  try{
+    const wq=await readWB(fq),wm=await readWB(fm);
+    const M=buildMaster(wm);
+    rows=sync(sheetRows(wq,wq.SheetNames[0]),M);
+    const dates=rows.map(x=>x.td).filter(Boolean).sort();
+    $('d1').value='';$('d2').value='';
+    $('info').textContent=`Selesai. Master: ${M.byCA.size} customer, ${M.phCA.size+M.phBP.size} nomor dari sheet terminate. Rentang tgl terminate query: ${dates[0]||'-'} s/d ${dates.at(-1)||'-'}.`;
+    $('cres').style.display=$('csend').style.display='block';
+    render();
+    if($('auto').checked){
+      if(!/^(https?:\/\/|\/)/.test($('url').value.trim())){msg('Isi URL webhook n8n dulu agar kirim otomatis jalan, lalu proses ulang.',false)}
+      else{rows.forEach(x=>{if(/cek manual/.test(x.src))x.sel=false});lastDays(parseInt($('adays').value)||30);render();await doSend()}
+    }
+  }catch(e){$('info').textContent='Gagal membaca file: '+e.message}
+};
+['d1','d2','onlyph'].forEach(id=>$(id).onchange=render);
+function lastDays(n){const d=rows.map(x=>x.td).filter(Boolean).sort().at(-1);if(!d)return;
+  $('d1').value=new Date(new Date(d).getTime()-n*864e5).toISOString().slice(0,10);$('d2').value=d}
+$('b30').onclick=()=>{lastDays(30);render()};
+$('ball').onclick=()=>{$('d1').value=$('d2').value='';render()};
+$('chkall').onchange=e=>{visible().forEach(x=>x.sel=e.target.checked);render()};
+$('tb').onchange=e=>{const i=e.target.dataset.i;if(i!==undefined){rows[i].sel=e.target.checked;render()}};
+
+try{$('url').value=localStorage.getItem('n8nurl')||''}catch(e){}
+if(location.protocol==='https:'&&(!$('url').value||/^http:\/\//.test($('url').value)))$('url').value='/api/send';
+const CHUNK=100,GAP_SEC=60; // n8n mengecek Notion maks 100 Billing Number per kiriman
+async function doSend(){
+  const url=$('url').value.trim(),items=payload().items;
+  if(!/^(https?:\/\/|\/)/.test(url)){msg('Isi URL webhook n8n yang valid.',false);return}
+  if(!items.length){msg('Tidak ada data yang dipilih.',false);return}
+  try{localStorage.setItem('n8nurl',url)}catch(e){}
+  const n=Math.ceil(items.length/CHUNK);
+  $('bsend').disabled=true;
+  try{
+    for(let i=0;i<n;i++){
+      msg(`Mengirim kiriman ${i+1} dari ${n} (${Math.min((i+1)*CHUNK,items.length)}/${items.length} data)… jangan tutup halaman ini.`,true);
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:items.slice(i*CHUNK,(i+1)*CHUNK)})});
+      const t=await res.text();
+      if(!res.ok){msg(`Kiriman ${i+1} dari ${n} gagal: n8n membalas ${res.status}: ${t.slice(0,300)}\nKiriman sebelumnya (${i}) sudah terkirim.`,false);render();return}
+      if(i<n-1){for(let s=GAP_SEC;s>0;s--){msg(`Kiriman ${i+1} dari ${n} terkirim. Menunggu ${s} detik sebelum kiriman berikutnya (agar tidak kena batas Notion)… jangan tutup halaman ini.`,true);await new Promise(r=>setTimeout(r,1000))}}
+    }
+    msg(`Berhasil: ${items.length} data terkirim dalam ${n} kiriman. n8n sedang memperbarui halaman yang sudah ada dan membuat halaman baru untuk yang belum ada di Notion. Cek tab Executions di n8n untuk progresnya.`,true);
+  }catch(e){
+    msg('Gagal terhubung ke n8n: '+e.message+'\nJika halaman ini https dan URL n8n http, browser memblokirnya (Mixed Content): di Vercel pakai /api/send. Selain itu kemungkinan CORS: di node Webhook n8n buka Options → Allowed Origins (CORS) → isi *  . Cek juga URL (gunakan Production URL & workflow sudah Active).',false);
+  }
+  render();
+}
+
+$('bsend').onclick=doSend;
+$('bdl').onclick=()=>{const b=new Blob([JSON.stringify(payload(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='terminate-sync.json';a.click()};
+$('bcp').onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(payload(),null,2));msg('JSON disalin ke clipboard.',true)}catch(e){msg('Gagal menyalin: '+e.message,false)}};
+</script>
+</body>
+</html>
